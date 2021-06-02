@@ -55,9 +55,9 @@ type StructFields = syn::punctuated::Punctuated<syn::Field, syn::Token!(,)>;
 
 fn get_fields_from_derive_input(d: &syn::DeriveInput) -> syn::Result<&StructFields> {
     if let syn::Data::Struct(syn::DataStruct {
-        fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
-        ..
-    }) = d.data
+                                 fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
+                                 ..
+                             }) = d.data
     {
         return Ok(named);
     }
@@ -71,7 +71,14 @@ fn generate_builder_struct_fields_def(
     fields: &StructFields,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+    let types: Vec<_> = fields.iter().map(|f| {
+        if let Some(inner_ty) = get_optional_inner_type(&f.ty) {
+            quote!(std::option::Option<#inner_ty>)
+        } else {
+            let ty = &f.ty;
+            quote!(std::option::Option<#ty>)
+        }
+    }).collect();
     let token_stream = quote! {
         #(#idents: std::option::Option<#types>),*
     };
@@ -108,38 +115,59 @@ fn generate_builder_factory_init_clauses(
 // }
 
 fn generate_fields_setter(fields: &StructFields) -> syn::Result<proc_macro2::TokenStream> {
+    let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+
     let mut stream = proc_macro2::TokenStream::new();
-    for field in fields {
-        let ident = &field.ident;
-        let ty = &field.ty;
-        let setter = quote! {
+    for (ident, ty) in idents.iter().zip(types.iter()) {
+        let token_stream;
+        if let Some(inner_ty) = get_optional_inner_type(ty) {
+            token_stream = quote! {
+                fn #ident(&mut self, #ident: #inner_ty) -> &mut Self {
+                    self.#ident = std::option::Option::Some(#ident);
+                    self
+                }
+            }
+        } else {
+            token_stream = quote! {
             fn #ident(&mut self, #ident: #ty) -> &mut Self {
                 self.#ident = std::option::Option::Some(#ident);
                 self
             }
         };
-        stream.extend(setter);
+        }
+        stream.extend(token_stream);
     }
     Ok(stream)
 }
 
 fn generate_build_method(fields: &StructFields, struct_ident: &syn::Ident) -> syn::Result<proc_macro2::TokenStream> {
     let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+
     let (mut field_streams, mut field_checkers) = (Vec::new(), Vec::new());
 
-    for ident in idents {
-        let checker = quote! {
-            if self.#ident.is_none() {
-                let err = format!("{} field missing", stringify!(#ident));
-                return std::result::Result::Err(err.into())
-            }
-        };
-        field_checkers.push(checker);
+    for idx in 0..idents.len() {
+        let ident = idents[idx];
+        if get_optional_inner_type(&types[idx]).is_none() {
+            let checker = quote! {
+                if self.#ident.is_none() {
+                    let err = format!("{} field missing", stringify!(#ident));
+                    return std::result::Result::Err(err.into())
+                }
+            };
+            field_checkers.push(checker);
 
-        let stream = quote! {
-            #ident: self.#ident.clone().unwrap(),
-        };
-        field_streams.push(stream);
+            let stream = quote! {
+                #ident: self.#ident.clone().unwrap(),
+            };
+            field_streams.push(stream);
+        } else {
+            let stream = quote! {
+                #ident: self.#ident.clone(),
+            };
+            field_streams.push(stream);
+        }
     }
     let token_stream = quote! {
         pub fn build(&mut self) -> std::result::Result<#struct_ident, std::boxed::Box<dyn std::error::Error>> {
@@ -152,4 +180,19 @@ fn generate_build_method(fields: &StructFields, struct_ident: &syn::Ident) -> sy
         }
     };
     Ok(token_stream)
+}
+
+fn get_optional_inner_type(t: &syn::Type) -> Option<&syn::Type> {
+    if let syn::Type::Path(syn::TypePath { path: syn::Path { segments, .. }, .. }) = t {
+        if let Some(seg) = segments.last() {
+            if seg.ident.to_string() == "Option" {
+                if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }) = &seg.arguments {
+                    if let Some(syn::GenericArgument::Type(ty)) = args.first() {
+                        return Some(ty);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
