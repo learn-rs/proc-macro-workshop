@@ -3,7 +3,6 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{self, spanned::Spanned};
-use std::process::id;
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -80,7 +79,7 @@ fn generate_builder_struct_fields_def(
         }
     }).collect();
     let token_stream = quote! {
-        #(#idents: std::option::Option<#types>),*
+        #(#idents: #types),*
     };
     Ok(token_stream)
 }
