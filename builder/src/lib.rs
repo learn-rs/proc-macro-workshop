@@ -4,16 +4,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{self, spanned::Spanned};
 
-#[proc_macro_derive(ExploreAttribute)]
-pub fn attribute_explore(input: TokenStream) -> TokenStream {
-    let st = syn::parse_macro_input!(input as syn::DeriveInput);
-    let attr = st.attrs.first().unwrap();
-    let meta = attr.parse_meta();
-    eprintln!("{:#?}", meta);
-    proc_macro2::TokenStream::new().into()
-}
-
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let st = syn::parse_macro_input!(input as syn::DeriveInput);
     match do_expand(&st) {
@@ -166,11 +157,11 @@ fn generate_fields_setter(fields: &StructFields) -> syn::Result<proc_macro2::Tok
         }
         else {
             token_stream = quote! {
-            fn #ident(&mut self, #ident: #ty) -> &mut Self {
-                self.#ident = std::option::Option::Some(#ident);
-                self
-            }
-        };
+                fn #ident(&mut self, #ident: #ty) -> &mut Self {
+                    self.#ident = std::option::Option::Some(#ident);
+                    self
+                }
+            };
         }
         stream.extend(token_stream);
     }
@@ -193,12 +184,11 @@ fn generate_build_method(fields: &StructFields, struct_ident: &syn::Ident) -> sy
                 }
             };
             field_checkers.push(checker);
-
-            let stream = quote! {
-                #ident: self.#ident.clone().unwrap(),
-            };
-            field_streams.push(stream);
-        } else if get_user_specified_ident_for_vec(&fields[idx]).is_some() {
+        }
+    }
+    for idx in 0..idents.len() {
+        let ident = idents[idx];
+        if get_user_specified_ident_for_vec(&fields[idx]).is_some() {
             field_streams.push(quote! {
                 #ident: self.#ident.clone()
             });
@@ -208,7 +198,7 @@ fn generate_build_method(fields: &StructFields, struct_ident: &syn::Ident) -> sy
             });
         } else {
             let stream = quote! {
-                #ident: self.#ident.clone(),
+                #ident: self.#ident.clone()
             };
             field_streams.push(stream);
         }
@@ -218,7 +208,7 @@ fn generate_build_method(fields: &StructFields, struct_ident: &syn::Ident) -> sy
             #(#field_checkers)*
 
             let ident = #struct_ident {
-                #(#field_streams)*
+                #(#field_streams),*
             };
             std::result::Result::Ok(ident)
         }
@@ -230,7 +220,7 @@ fn get_generic_inner_type<'a>(t: &'a syn::Type, outer_ident_name: &str) -> Optio
     if let syn::Type::Path(syn::TypePath {ref path, ..}) = t {
         if let Some(seg) = path.segments.last() {
             if seg.ident == outer_ident_name {
-                if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }) = &seg.arguments {
+                if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { ref args, .. }) = &seg.arguments {
                     if let Some(syn::GenericArgument::Type(r#type)) = args.first() {
                         return Some(r#type);
                     }
@@ -248,8 +238,8 @@ fn get_user_specified_ident_for_vec(field: &syn::Field) -> Option<syn::Ident> {
                 if p.ident == "builder" {
                     if let Some(syn::NestedMeta::Meta(syn::Meta::NameValue(kv))) = nested.first() {
                         if kv.path.is_ident("each") {
-                            if let syn::Lit::Str(ref ident_ref) = kv.lit {
-                                return Some(syn::Ident::new(ident_ref.value().as_ref(), attr.span()));
+                            if let syn::Lit::Str(ref ident_str) = kv.lit {
+                                return Some(syn::Ident::new(ident_str.value().as_str(), attr.span()));
                             }
                         }
                     }
