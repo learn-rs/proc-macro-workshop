@@ -70,17 +70,18 @@ fn generate_builder_struct_fields_def(
     fields: &StructFields,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let types: Vec<_> = fields.iter().map(|f| {
+    let types: syn::Result<Vec<_>> = fields.iter().map(|f| {
         if let Some(inner_ty) = get_generic_inner_type(&f.ty, "Option") {
-            quote!(std::option::Option<#inner_ty>)
-        } else if get_user_specified_ident_for_vec(f).is_some() {
+            Ok(quote!(std::option::Option<#inner_ty>))
+        } else if get_user_specified_ident_for_vec(f)?.is_some() {
             let origin_ty = &f.ty;
-            quote!(#origin_ty)
+            Ok(quote!(#origin_ty))
         } else {
             let ty = &f.ty;
-            quote!(std::option::Option<#ty>)
+            Ok(quote!(std::option::Option<#ty>))
         }
     }).collect();
+    let types = types?;
     let token_stream = quote! {
         #(#idents: #types),*
     };
@@ -90,22 +91,22 @@ fn generate_builder_struct_fields_def(
 fn generate_builder_factory_init_clauses(
     fields: &StructFields,
 ) -> syn::Result<Vec<proc_macro2::TokenStream>> {
-    let init_clauses: Vec<_> = fields
+    let init_clauses: syn::Result<Vec<_>> = fields
         .iter()
         .map(|f| {
             let ident = &f.ident;
-            if get_user_specified_ident_for_vec(f).is_some() {
-                quote! {
+            if get_user_specified_ident_for_vec(f)?.is_some() {
+                Ok(quote! {
                     #ident: std::vec::Vec::new()
-                }
+                })
             } else {
-                quote! {
+                Ok(quote! {
                     #ident: std::option::Option::None
-                }
+                })
             }
         })
         .collect();
-    Ok(init_clauses)
+    Ok(init_clauses?)
 }
 
 // fn generate_fields_setter(fields: &StructFields) -> syn::Result<Vec<proc_macro2::TokenStream>> {
@@ -136,7 +137,7 @@ fn generate_fields_setter(fields: &StructFields) -> syn::Result<proc_macro2::Tok
                     self
                 }
             }
-        } else if let Some(ref user_specified_ident) = get_user_specified_ident_for_vec(&fields[idx]) {
+        } else if let Some(ref user_specified_ident) = get_user_specified_ident_for_vec(&fields[idx])? {
             let inner_ty = get_generic_inner_type(ty, "Vec").ok_or(syn::Error::new(fields[idx].span(), "each field must be specified with Vec field"))?;
             token_stream = quote! {
                 fn #user_specified_ident(&mut self, #user_specified_ident: #inner_ty) -> &mut Self {
@@ -176,7 +177,7 @@ fn generate_build_method(fields: &StructFields, struct_ident: &syn::Ident) -> sy
 
     for idx in 0..idents.len() {
         let ident = idents[idx];
-        if get_generic_inner_type(&types[idx], "Option").is_none() && get_user_specified_ident_for_vec(&fields[idx]).is_none() {
+        if get_generic_inner_type(&types[idx], "Option").is_none() && get_user_specified_ident_for_vec(&fields[idx])?.is_none() {
             let checker = quote! {
                 if self.#ident.is_none() {
                     let err = format!("{} field missing", stringify!(#ident));
@@ -188,7 +189,7 @@ fn generate_build_method(fields: &StructFields, struct_ident: &syn::Ident) -> sy
     }
     for idx in 0..idents.len() {
         let ident = idents[idx];
-        if get_user_specified_ident_for_vec(&fields[idx]).is_some() {
+        if get_user_specified_ident_for_vec(&fields[idx])?.is_some() {
             field_streams.push(quote! {
                 #ident: self.#ident.clone()
             });
@@ -231,7 +232,7 @@ fn get_generic_inner_type<'a>(t: &'a syn::Type, outer_ident_name: &str) -> Optio
     None
 }
 
-fn get_user_specified_ident_for_vec(field: &syn::Field) -> Option<syn::Ident> {
+fn get_user_specified_ident_for_vec(field: &syn::Field) -> syn::Result<Option<syn::Ident>> {
     for attr in &field.attrs {
         if let Ok(syn::Meta::List(syn::MetaList {ref path, ref nested, ..})) = attr.parse_meta() {
             if let Some(p) = path.segments.first() {
@@ -239,13 +240,17 @@ fn get_user_specified_ident_for_vec(field: &syn::Field) -> Option<syn::Ident> {
                     if let Some(syn::NestedMeta::Meta(syn::Meta::NameValue(kv))) = nested.first() {
                         if kv.path.is_ident("each") {
                             if let syn::Lit::Str(ref ident_str) = kv.lit {
-                                return Some(syn::Ident::new(ident_str.value().as_str(), attr.span()));
+                                return Ok(Some(syn::Ident::new(ident_str.value().as_str(), attr.span())));
                             }
                         }
+                    }
+                } else {
+                    if let Ok(syn::Meta::List(ref list)) = attr.parse_meta() {
+                        return Err(syn::Error::new_spanned(list, r#"expected `builder(each = "...")`"#))
                     }
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
